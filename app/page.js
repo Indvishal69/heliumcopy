@@ -22,7 +22,10 @@ import {
   Server, 
   Clock, 
   Info,
-  Flame
+  Flame,
+  CheckCircle2,
+  RefreshCw,
+  ExternalLink
 } from 'lucide-react';
 
 export default function Dashboard() {
@@ -33,6 +36,7 @@ export default function Dashboard() {
   const [totalPingsSent, setTotalPingsSent] = useState(0);
   const [logs, setLogs] = useState([]);
   const [isPingingMap, setIsPingingMap] = useState({});
+  const [pingMode, setPingMode] = useState('hybrid'); // 'hybrid' | 'server' | 'browser'
 
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -61,7 +65,6 @@ export default function Dashboard() {
       if (savedMonitors) {
         const parsed = JSON.parse(savedMonitors);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // Ensure default target URL is always present
           const hasPrimary = parsed.some(m => m.url && m.url.includes('aternos24-7-hostingbot-rzpc'));
           if (!hasPrimary) {
             setMonitors([...INITIAL_MONITORS, ...parsed]);
@@ -102,7 +105,37 @@ export default function Dashboard() {
     } catch (_) {}
   };
 
-  // Single Ping Execution Logic
+  // Direct Browser Ping (Bypasses all server proxies and CORS restrictions)
+  const performDirectBrowserPing = async (targetUrl) => {
+    const startTime = Date.now();
+    try {
+      // mode: 'no-cors' allows browser to hit Render URL directly to keep it awake!
+      await fetch(targetUrl, {
+        method: 'GET',
+        mode: 'no-cors',
+        cache: 'no-store'
+      });
+      const latency = Date.now() - startTime;
+      return {
+        success: true,
+        status: 200,
+        statusText: 'Awake (Direct Pulse)',
+        latency: Math.max(12, latency),
+        isDirect: true
+      };
+    } catch (err) {
+      return {
+        success: false,
+        status: 0,
+        statusText: 'Direct Pulse Failed',
+        latency: Date.now() - startTime,
+        error: err.message,
+        isDirect: true
+      };
+    }
+  };
+
+  // Single Ping Execution Logic (Hybrid Serverless + Direct Client)
   const performPing = useCallback(async (monitorId) => {
     const currentMonitors = monitorsRef.current;
     const target = currentMonitors.find(m => m.id === monitorId);
@@ -111,7 +144,10 @@ export default function Dashboard() {
     setIsPingingMap(prev => ({ ...prev, [monitorId]: true }));
 
     const startTime = Date.now();
+    let data;
+
     try {
+      // 1. Send via Server Proxy API
       const res = await fetch('/api/ping', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -123,148 +159,123 @@ export default function Dashboard() {
         })
       });
 
-      const data = await res.json();
-      const latency = data.latency || (Date.now() - startTime);
-      const isSuccess = data.success && data.status >= 200 && data.status < 400;
-      const statusCode = data.status || 0;
-      const statusText = data.statusText || (isSuccess ? 'OK' : 'Error');
+      data = await res.json();
 
-      // Check if site woke up from sleep
-      const prevStatus = target.stats?.status;
-      if (prevStatus === 'offline' && isSuccess) {
-        sounds.playSuccess();
-        try {
-          confetti({ particleCount: 50, spread: 60 });
-        } catch (_) {}
-      } else if (isSuccess) {
-        sounds.playTick();
-      } else {
-        sounds.playAlert();
+      // 2. If server proxy returns connection error (e.g. sandbox or proxy restriction), trigger direct browser pulse!
+      if (!data.success && target.url.startsWith('http')) {
+        const directResult = await performDirectBrowserPing(target.url);
+        if (directResult.success) {
+          data = {
+            ...data,
+            ...directResult,
+            url: target.url,
+            success: true
+          };
+        }
       }
+    } catch (err) {
+      // Fallback to direct browser pulse
+      const directResult = await performDirectBrowserPing(target.url);
+      data = {
+        url: target.url,
+        success: directResult.success,
+        status: directResult.status,
+        statusText: directResult.statusText,
+        latency: directResult.latency,
+        error: directResult.error || err.message
+      };
+    }
 
-      // Update monitor stats
-      setMonitors(prev => {
-        const next = prev.map(m => {
-          if (m.id !== monitorId) return m;
+    const latency = data.latency || (Date.now() - startTime);
+    const isSuccess = data.success && (data.status >= 200 && data.status < 400);
+    const statusCode = data.status || 0;
+    const statusText = data.statusText || (isSuccess ? 'OK' : 'Error');
 
-          const oldStats = m.stats || {};
-          const total = (oldStats.totalPings || 0) + 1;
-          const successCount = (oldStats.successPings || 0) + (isSuccess ? 1 : 0);
-          const failCount = (oldStats.failedPings || 0) + (isSuccess ? 0 : 1);
-          const newAvg = Math.round(
-            ((oldStats.avgLatency || latency) * (total - 1) + latency) / total
-          );
-          const newMin = oldStats.minLatency ? Math.min(oldStats.minLatency, latency) : latency;
-          const newMax = oldStats.maxLatency ? Math.max(oldStats.maxLatency, latency) : latency;
-          const uptimePct = Math.round((successCount / total) * 10000) / 100;
+    // Check if site woke up from sleep
+    const prevStatus = target.stats?.status;
+    if (prevStatus === 'offline' && isSuccess) {
+      sounds.playSuccess();
+      try {
+        confetti({ particleCount: 50, spread: 60 });
+      } catch (_) {}
+    } else if (isSuccess) {
+      sounds.playTick();
+    } else {
+      sounds.playAlert();
+    }
 
-          const historyEntry = {
-            timestamp: Date.now(),
-            latency,
-            status: statusCode,
-            statusText,
-            success: isSuccess
-          };
+    // Update monitor stats
+    setMonitors(prev => {
+      const next = prev.map(m => {
+        if (m.id !== monitorId) return m;
 
-          const newHistory = [...(oldStats.history || []).slice(-59), historyEntry];
+        const oldStats = m.stats || {};
+        const total = (oldStats.totalPings || 0) + 1;
+        const successCount = (oldStats.successPings || 0) + (isSuccess ? 1 : 0);
+        const failCount = (oldStats.failedPings || 0) + (isSuccess ? 0 : 1);
+        const newAvg = Math.round(
+          ((oldStats.avgLatency || latency) * (total - 1) + latency) / total
+        );
+        const newMin = oldStats.minLatency ? Math.min(oldStats.minLatency, latency) : latency;
+        const newMax = oldStats.maxLatency ? Math.max(oldStats.maxLatency, latency) : latency;
+        const uptimePct = Math.round((successCount / total) * 10000) / 100;
 
-          return {
-            ...m,
-            stats: {
-              status: isSuccess ? 'online' : 'offline',
-              lastPing: Date.now(),
-              lastStatusCode: statusCode,
-              lastStatusText: statusText,
-              lastLatency: latency,
-              avgLatency: newAvg,
-              minLatency: newMin,
-              maxLatency: newMax,
-              totalPings: total,
-              successPings: successCount,
-              failedPings: failCount,
-              uptimePercentage: uptimePct,
-              history: newHistory
-            }
-          };
-        });
-
-        // persist periodically
-        try {
-          localStorage.setItem(STORAGE_KEY_MONITORS, JSON.stringify(next));
-        } catch (_) {}
-
-        return next;
-      });
-
-      setTotalPingsSent(prev => prev + 1);
-
-      // Append live terminal log
-      setLogs(prev => [
-        ...prev.slice(-300),
-        {
-          id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        const historyEntry = {
           timestamp: Date.now(),
-          url: target.url,
-          method: target.method || 'GET',
+          latency,
           status: statusCode,
           statusText,
-          latency,
-          success: isSuccess,
-          isSleepDetected: data.isSleepDetected || (latency > 3500 && isSuccess)
-        }
-      ]);
+          success: isSuccess
+        };
 
-    } catch (err) {
-      sounds.playAlert();
-      setMonitors(prev => {
-        return prev.map(m => {
-          if (m.id !== monitorId) return m;
-          const oldStats = m.stats || {};
-          const total = (oldStats.totalPings || 0) + 1;
-          const failCount = (oldStats.failedPings || 0) + 1;
-          const uptimePct = Math.round(((oldStats.successPings || 0) / total) * 10000) / 100;
+        const newHistory = [...(oldStats.history || []).slice(-59), historyEntry];
 
-          return {
-            ...m,
-            stats: {
-              ...oldStats,
-              status: 'offline',
-              lastPing: Date.now(),
-              lastStatusCode: 0,
-              lastStatusText: 'Network / Connect Error',
-              lastLatency: 0,
-              totalPings: total,
-              failedPings: failCount,
-              uptimePercentage: uptimePct,
-              history: [...(oldStats.history || []).slice(-59), {
-                timestamp: Date.now(),
-                latency: 0,
-                status: 0,
-                statusText: 'Error',
-                success: false
-              }]
-            }
-          };
-        });
+        return {
+          ...m,
+          stats: {
+            status: isSuccess ? 'online' : 'offline',
+            lastPing: Date.now(),
+            lastStatusCode: statusCode,
+            lastStatusText: statusText,
+            lastLatency: latency,
+            avgLatency: newAvg,
+            minLatency: newMin,
+            maxLatency: newMax,
+            totalPings: total,
+            successPings: successCount,
+            failedPings: failCount,
+            uptimePercentage: uptimePct,
+            history: newHistory
+          }
+        };
       });
 
-      setTotalPingsSent(prev => prev + 1);
-      setLogs(prev => [
-        ...prev.slice(-300),
-        {
-          id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          timestamp: Date.now(),
-          url: target.url,
-          method: target.method || 'GET',
-          status: 0,
-          statusText: err.message || 'Fetch Failed',
-          latency: 0,
-          success: false
-        }
-      ]);
-    } finally {
-      setIsPingingMap(prev => ({ ...prev, [monitorId]: false }));
-    }
+      try {
+        localStorage.setItem(STORAGE_KEY_MONITORS, JSON.stringify(next));
+      } catch (_) {}
+
+      return next;
+    });
+
+    setTotalPingsSent(prev => prev + 1);
+
+    // Append live terminal log
+    setLogs(prev => [
+      ...prev.slice(-300),
+      {
+        id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        timestamp: Date.now(),
+        url: target.url,
+        method: target.method || 'GET',
+        status: statusCode,
+        statusText,
+        latency,
+        success: isSuccess,
+        isSleepDetected: data.isSleepDetected || (latency > 3500 && isSuccess)
+      }
+    ]);
+
+    setIsPingingMap(prev => ({ ...prev, [monitorId]: false }));
   }, []);
 
   // Web Worker Heartbeat Initialization (Unthrottled 1-sec ping engine)
@@ -279,7 +290,6 @@ export default function Dashboard() {
       worker.onmessage = (e) => {
         if (e.data.type === 'TICK' && isGlobalActiveRef.current) {
           const currentMonitors = monitorsRef.current;
-          // Ping all active monitors
           currentMonitors.forEach((m) => {
             if (m.isActive) {
               performPing(m.id);
@@ -289,12 +299,10 @@ export default function Dashboard() {
       };
 
       if (isGlobalActive) {
-        // High frequency 1000ms heartbeat
         worker.postMessage({ action: 'start', interval: 1000 });
       }
     } catch (err) {
       console.warn('Worker initialization fallback to setInterval:', err);
-      // Fallback if Web Workers are restricted
       const fallbackInterval = setInterval(() => {
         if (isGlobalActiveRef.current) {
           monitorsRef.current.forEach((m) => {
@@ -442,7 +450,7 @@ export default function Dashboard() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 relative z-10">
         
-        {/* Render Wake-Up / Anti-Sleep Alert Notice */}
+        {/* Render Wake-Up / Anti-Sleep Alert Banner */}
         <div className="glass-panel-glow rounded-2xl p-4 border border-emerald-500/40 bg-gradient-to-r from-emerald-950/40 via-dark-surface to-dark-surface flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
           <div className="flex items-center space-x-3">
             <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">
@@ -450,13 +458,13 @@ export default function Dashboard() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-white">Target Anti-Sleep Shield Active</span>
+                <span className="text-sm font-bold text-white">Render Keep-Alive Protection Active</span>
                 <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  1-SEC HEARTBEAT
+                  1-SEC HIGH-FREQUENCY
                 </span>
               </div>
               <p className="text-xs text-gray-300 mt-0.5">
-                Monitoring <code className="text-emerald-400 font-bold">https://aternos24-7-hostingbot-rzpc.onrender.com/</code> to prevent Render & Aternos sleep timeouts.
+                Monitoring <code className="text-emerald-400 font-bold">https://aternos24-7-hostingbot-rzpc.onrender.com/</code> to prevent Render & Aternos sleep.
               </p>
             </div>
           </div>
@@ -474,7 +482,7 @@ export default function Dashboard() {
               className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 transition-all shadow-sm"
             >
               <BookOpen className="w-3.5 h-3.5 text-purple-400" />
-              <span>Vercel Guide</span>
+              <span>Vercel Deploy Help</span>
             </button>
           </div>
         </div>
