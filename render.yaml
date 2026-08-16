@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: uptime-shield-web
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TARGET_URL
+        value: https://aternos24-7-hostingbot-rzpc.onrender.com/
+      - key: PING_INTERVAL_MS
+        value: 1000
+
+  - type: worker
+    name: uptime-shield-worker
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm run worker
+    envVars:
+      - key: TARGET_URL
+        value: https://aternos24-7-hostingbot-rzpc.onrender.com/
+      - key: PING_INTERVAL_MS
+        value: 1000

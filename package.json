@@ -1,0 +1,37 @@
+{
+  "name": "uptime-shield-bot",
+  "version": "2.0.0",
+  "description": "24/7 Uptime Robot & Anti-Sleep Keep-Alive Monitor for Render, Aternos, and Web Applications",
+  "main": "worker.js",
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 3000",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "worker": "node worker.js",
+    "ping": "node worker.js"
+  },
+  "keywords": [
+    "uptime-robot",
+    "keep-alive",
+    "anti-sleep",
+    "render-keep-alive",
+    "aternos-bot",
+    "uptime-monitor",
+    "vercel"
+  ],
+  "author": "Indvishal69",
+  "license": "MIT",
+  "dependencies": {
+    "canvas-confetti": "^1.9.4",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.31.0",
+    "next": "^14.2.35",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.5.4",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.19"
+  }
+}

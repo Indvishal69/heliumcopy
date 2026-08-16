@@ -1,0 +1,27 @@
+name: '24/7 Uptime Keep-Alive Bot'
+
+on:
+  schedule:
+    # Run every 5 minutes (standard GitHub cron frequency)
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+  push:
+    branches:
+      - main
+      - arena/**
+
+jobs:
+  ping-target:
+    name: 'Keep Render App Awake'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Ping Aternos 24/7 Hosting Bot on Render'
+        run: |
+          TARGET_URL="https://aternos24-7-hostingbot-rzpc.onrender.com/"
+          echo "Sending Keep-Alive burst to $TARGET_URL ..."
+          for i in {1..5}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$TARGET_URL" || echo "000")
+            echo "Ping #$i response status: $STATUS"
+            sleep 1
+          done
+          echo "Keep-Alive pulse transmitted successfully!"
